@@ -1,0 +1,923 @@
+---
+title: "Methane Fluxes"
+format: html
+editor: visual
+---
+
+## Reading and Cleaning Data
+
+```{r}
+library(tidyverse)
+library(readr)
+library(janitor)
+library(lubridate)
+library(ggpmisc)
+library(broom)
+library(patchwork)
+library(hms)
+library(readxl)
+```
+
+## Flux Calculations
+
+```{r}
+# Reading in excel files with pertinent data for equation:
+# F = S/A * PV/RT
+
+# F=flux (to be calculated)
+# S=slope(found in master_table)
+# A= area of stem (needed)
+# P= pressure (needed)
+# V= volume of gas analyzer (needed)
+# R= ideal gas constant (constant)
+# T= temperature (needed)
+
+# Bringing in A and and V for trees
+tree_chambers_raw <- read_excel("data_raw/chamber volume data.xlsx", sheet="tree chamber volume hand measur") |>
+  select(2, 23, 24)
+
+# Bringing in A and V for soils
+soil_chambers_raw <- read_excel("data_raw/chamber volume data.xlsx", sheet="soil chambers dimensions") |>
+  select(1, 7, 8)
+
+```
+
+```{r}
+# Cleaning tree_chambers_raw
+tree_chambers_clean <- tree_chambers_raw |> 
+  mutate(`volume(cm^3)` = case_when(
+    `Tree ID` == 1617 & is.na(`volume(cm^3)`) ~ 1170.7,
+    TRUE ~ `volume(cm^3)`
+  )) |> # Manually setting the chamber volume for NA value 1617
+  mutate(volume_m3 = `volume(cm^3)`/1e6) |> # Conversion to m^3
+  rename(area_m2 = `area meters squared`) |> # Renaming area column
+  rename(tree_id = `Tree ID`) |> # Renaming tree_id column
+  slice(-25) |> # Getting rid of an extra NA row
+  mutate(surface = "stem") |> 
+  select(tree_id, area_m2, volume_m3, surface)
+```
+
+```{r}
+# NA value fixing
+replacement_rows <- tree_chambers_clean |> 
+  filter(tree_id %in% c("1602a", "1614a", "1616a")) |> 
+  mutate(tree_id = str_remove(tree_id, "[A-Za-z]+$"))
+
+tree_chambers_clean <- tree_chambers_clean |> 
+  filter(!(tree_id %in% c("1602", "1614", "1616") & (is.na(area_m2) | is.na(volume_m3)))) |> 
+  bind_rows(replacement_rows)
+```
+
+```{r}
+# Cleaning soil_chambers_raw
+soil_chambers_clean <- soil_chambers_raw |> 
+  mutate(volume_m3 = Volume/1e6) |> # Conversion cm3 to m3
+  mutate(area_m2 = area/1e4) |> #Conversion cm2 to m2
+  rename(tree_id = Chamber) |> 
+  slice(-c(n()-1, n())) |> # removing last 2 rows of NAs
+  mutate(surface = "soil") |> 
+  mutate(tree_id = as.character(tree_id)) |> 
+  select(tree_id, area_m2, volume_m3, surface)
+```
+
+```{r}
+# Making ONE chamber clean to append to the clean data w/ measurements
+chambers_clean <- bind_rows(
+  soil_chambers_clean |> mutate(tree_id = as.character(tree_id)),
+  tree_chambers_clean |> mutate(tree_id = as.character(tree_id)))
+```
+
+## Reading in Monthly Data
+
+```{r}
+all <- readxl::excel_sheets("data_raw/Cypress methane data_all months combined.xlsx")
+class(all)
+all
+```
+
+```{r}
+# Reading in weather information
+# Comments underneath will explain report NA values that were replaced by the mean/average value for that month of soil/stem temps.
+
+weather_may <- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "May") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(-n()) |> select(tree_id,soil,stem) |> add_row(tree_id = "1606", soil = NA, stem = NA) |> add_row(tree_id = "1616", soil = NA, stem = NA) |> mutate(soil = ifelse(is.na(soil), round(mean(soil, na.rm = TRUE), 2), soil)) |> mutate(stem = ifelse(is.na(stem), round(mean(stem, na.rm = TRUE), 2), stem))
+
+# May: STEM 1612, 1606, 1616; SOIL 1614, 1606, 1616
+
+weather_june <- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "June") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(-n()) |> select(tree_id,soil,stem) |> mutate(soil = ifelse(is.na(soil), round(mean(soil, na.rm = TRUE), 2), soil))
+
+# June: SOIL 1612, 1615
+
+weather_july <- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "July") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(-n()) |> select(tree_id,soil,stem) |> mutate(soil = ifelse(is.na(soil), round(mean(soil, na.rm = TRUE), 2), soil))
+
+# July: SOIL 1606, 1612, 1615
+
+weather_august<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "August") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(-n()) |> select(tree_id,soil,stem) 
+
+# August: No NAs
+
+weather_september<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "September") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(-n()) |> select(tree_id,soil,stem) |> mutate(soil = ifelse(is.na(soil), round(mean(soil, na.rm = TRUE), 2), soil)) |> mutate(stem = ifelse(is.na(stem), round(mean(stem, na.rm = TRUE), 2), stem))
+
+# September: SOIL 1609, 1615, STEM 1609, 1615
+
+weather_november<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "early November") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(-n()) |> select(tree_id,soil,stem) |> mutate(soil = ifelse(is.na(soil), round(mean(soil, na.rm = TRUE), 2), soil)) |> mutate(stem = ifelse(is.na(stem), round(mean(stem, na.rm = TRUE), 2), stem))
+
+# November: SOIL 1617, STEM 1602, 1614, 1617
+
+weather_january<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "January 2014") |> select(1:3) |> mutate(soil=`Soil temp C`+273.15) |> mutate(stem=`Air temp C`+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(-n()) |> select(tree_id,soil,stem)
+
+# January: no NAs
+
+weather_february<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "February 2014") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(-n()) |> select(tree_id,soil,stem) 
+
+# February: no NAs
+
+weather_march<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "March 2014") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(1:12) |> select(tree_id,soil,stem) |> mutate(soil = ifelse(is.na(soil), round(mean(soil, na.rm = TRUE), 2), soil))
+
+# March: SOIL 1604, 1605, 1606, 1615, 1616, 1617
+
+weather_april<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "April 2014") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(1:12) |> select(tree_id,soil,stem)
+
+# April: no NAs
+
+weather_may14<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "May 2014") |> select(2:4) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(1:12) |> select(tree_id,soil,stem)
+
+# May (2014): no NAs
+
+weather_june14<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "June 2014") |> select(2:4) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(1:12) |> select(tree_id,soil,stem)
+
+# June (2014): no NAs
+
+weather_july14<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "July 2014") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(1:12) |> select(tree_id,soil,stem)
+
+# July (2014): no NAs
+
+weather_august14<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "Aug 2014") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(1:12) |> select(tree_id,soil,stem)
+
+# August (2014): no NAs
+
+weather_september14<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "September 2014") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(1:12) |> select(tree_id,soil,stem)
+
+# September (2014): no NAs
+
+weather_october14<- readxl::read_xlsx("data_raw/Cypress temp moisture water level data.xlsx", sheet= "October 2014") |> select(1:3) |> mutate(soil=Soil+273.15) |> mutate(stem=Air+273.15) |> mutate(tree_id = as.character(Tree)) |> slice(1:12) |> select(tree_id,soil,stem)
+
+# October (2014): no NAs
+```
+
+```{r}
+# Loading in all data - separated by month and the "sheet" line of code tells the program which sheets file to open
+
+# select(x:y) is a function to mitigate the amount of cleaning. It will select columns (in excel, these are labeled A=1, B=2, etc) that are important for getting the "clean dataset", which refers to datasets with: month (January, February, etc), tree_id (tree identifier), surface (soil, tree, or other), time_min (time with minutes divided into the hour; 10:30 would be 10.5), methane (ppm emission), time_proper (for the graphs, a standardized time reading, ie 10:15 instead of 10.25), and month_val (January=1, February=2, etc)
+
+# Note that all of these columns don't currently EXIST in the spreadsheet (I had to mutate and do some coding to get all of them), but the columns are selected so that they can be cleaned into the columns.
+
+trees_may <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "May_all data") |> select(1:10)
+
+trees_june <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "June flux data") |> select(1:11)
+
+trees_july <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "July flux data") |> select(10:17)
+# July interpretation - NA values which are coded as flag_absent, and several that are flagged as "n", which are flag_bad
+
+trees_august <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "August flux data") |> select(1:7)
+
+trees_september <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "September flux data") |> select(1:7)
+
+trees_november <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "November flux data") |> select(1:7)
+
+trees_january <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "January flux data") |> select(1:10)
+
+trees_february <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "Feb 2014 flux data") |> select(1:7)
+
+trees_march <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "March 2014 (032014)") |> select(1:10)
+
+trees_april <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "April 2014 (04264714)") |> select(1:6)
+
+trees_may14 <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "May 2014 (052614)") |> select(1:8)
+
+trees_june14 <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "June 2014 (062514)") |> select(1:4, 6)
+
+trees_july14 <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "July 2014 (080114)") |> select(1:4, 6)
+
+trees_august14 <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "Aug 2014 (082914)") |> select(1:4, 6)
+
+trees_september14 <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "Sept 2014 (100214)") |> select(1:8)
+
+trees_october14 <- readxl::read_xlsx("data_raw/Cypress methane data_all months combined.xlsx", sheet = "Oct 2014 (102314)") |> select(1:12, 14)
+
+# Errors (Expecting numeric: got a date) will come from conflicting measurements of time; will not impact the data.
+```
+
+## Cleaning into structure
+
+month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem
+
+```{r}
+# The format for all months will be similar, so the May data will be an annotated description of what the code is doing.
+
+# Clean trees_may
+trees_may_clean<-trees_may |>               # Creating a new dataframe (trees_may_clean)
+  rename(month=Month) |>                    # Renaming month column header
+  mutate(month_val = 5) |>                  # Set the month_val; value changes between months
+  rename(tree_id=`Tree ID`) |>              # Renaming tree_id column header
+  mutate(tree_num = as.character(tree_id)) |>  # Same value for this month (no A,B,C,D,E)
+  mutate(tree_id = as.character(tree_id)) |>  # Changing tree_id to a character string instead of numeric (some trees are labeled as 1602A and 1602B in different months)
+  rename(surface= Type) |>                  # Renaming surface column header
+                  # Renaming time column header
+  rename(methane = `CH4 ppm...9`) |>        # Renaming methane column header
+  rename(time_min = time...8) |>            # Renaming time_min column header
+  mutate(year=2013) |>                      # Mutating in a year column
+  mutate(ch4_flag = ifelse(CH4flag == "n", 1, 0)) |> # CH4 flag binary coding (0=no flag)
+  mutate(
+  time_proper = as_hms(hms(seconds = 0, minutes = min., hours = hour)),
+  time_min = hour + min. / 60
+) |> # Using hms to create time_proper column; basing it off of the already made time column
+  left_join(weather_may |> select(tree_id, soil, stem), by = "tree_id") |> # Join temp. info
+  select(month,year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem) # Select only the columns that will be in final clean data set
+
+glimpse(trees_may_clean) # Provides a look at dataframe structure; should see 100+ rows, exactly 7 columns, and no NAs (unless the Excel has the values as NA).
+```
+
+```{r}
+# Clean trees june
+trees_june_clean<-trees_june |> 
+  mutate(month= "June") |>        # Manually set June as the month since there was no column
+  mutate(month_val = 6) |>              # Changed month_val to 6 (for June)
+  rename(tree_id= `Tree...1`) |> 
+  rename(surface= location) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>  # strip trailing letters
+  mutate(year=2013) |>
+  mutate(ch4_flag = ifelse(...11 == "n", 1, 0)) |> # CH4 flag binary coding (0=no flag)
+  rename(time_proper = `Time of day`) |> 
+  rename(methane = `Ch4 ppm`) |> 
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+   as.numeric(format(time_proper, "%M")) / 60) |>     # Formula for creating the time_min variable where it doesn't already exist. NOTE: create time_proper first to use.
+  mutate(time_proper = as_hms(time_proper)) |> 
+  mutate(tree_key = str_sub(tree_id, 1, 4)) |>
+  left_join(
+    weather_june |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month,year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_june_clean)
+```
+
+```{r}
+# Clean trees july
+trees_july_clean<-trees_july |> 
+  mutate(month="July") |> 
+  mutate(month_val = 7) |> 
+  mutate(year=2013) |>
+  rename(tree_id=Tree...10) |> 
+  mutate(tree_id = as.character(tree_id)) |> 
+  rename(surface= Type...11) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>  # strip trailing letters
+  rename(time=Time...12) |> 
+  mutate(ch4_flag = ifelse(...17 == "n", 1, 0)) |> # CH4 flag binary coding (0=no flag)
+  mutate(methane = CH4...14*0.0012*2) |> # Multiply by 2??
+  
+  # The below mutate() function is important and a humongous step that could improve analysis of data. The time was put in both a format of 9:30 and 930, which made for a complicated case_when() function that identified when Excel read the value in in its own time format (see labels) versus just numbers. 
+  
+  # Standardizing the method of time entry would be very smart for future use
+  
+  # Another quick note, the date on the time_proper will be TODAY'S (the day you run this code) date; this shouldn't matter because we are only interested in grouping by Month (which is a variable we've already coded)
+  
+ mutate(time_proper = case_when( 
+  as.numeric(time) < 1 ~ as.POSIXct(as.numeric(time) * 86400), # Own Excel format
+  TRUE ~ as.POSIXct(sprintf("%04d", as.integer(as.numeric(time))), format = "%H%M"))) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + # Just numbers
+         as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_july |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month,year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+glimpse(trees_july_clean)
+```
+
+```{r}
+# Clean trees august
+trees_august_clean <- trees_august |> 
+  mutate(month = "August") |> 
+  mutate(month_val = 8) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |> 
+  mutate(year = 2013) |>
+  mutate(ch4_flag = NA) |> 
+  rename(surface = Type) |> 
+  rename(time_proper = Time) |> 
+  rename(methane = `CH4 ppm`) |> 
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+   as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = as_hms(time_proper)) |> 
+  left_join(
+    weather_august |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_august_clean)
+```
+
+```{r}
+# Clean trees september
+trees_september_clean<-trees_september |> 
+  mutate(month= "September") |> 
+  mutate(month_val = 9) |> 
+  rename(tree_id= `Tree #`) |> 
+  rename(surface= Type) |> 
+  mutate(ch4_flag=NA) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(year=2013) |>
+  rename(time_proper = Time) |> 
+  rename(methane = `CH4 (ppm)`) |> 
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+   as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = as_hms(time_proper)) |>  
+  left_join(
+    weather_september |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_september_clean)
+```
+
+```{r}
+# Clean trees november
+trees_november_clean <- trees_november |> 
+  mutate(month = "November") |> 
+  mutate(month_val = 11) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(year=2013) |>
+  mutate(ch4_flag = ifelse(Notes == "N", 1, 0)) |> # CH4 flag binary coding (0=no flag)
+  rename(surface = Type) |> 
+  rename(methane = `CH4 ppm`) |> 
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = as_hms(time_proper)) |> 
+  left_join(
+    weather_november |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_november_clean)
+```
+
+```{r}
+# Clean trees january
+# Note: ch4_flag managed as Y = positive for flag, 1
+trees_january_clean <- trees_january |> 
+  mutate(month = "January") |> 
+  mutate(month_val = 1) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(year=2014) |>
+  mutate(ch4_flag = ifelse(...9 == "Y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  rename(surface = Type) |> 
+  rename(methane = ...7) |> 
+  mutate(time_proper = as.POSIXct(as.numeric(Time) * 86400)) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |>  
+  left_join(
+    weather_january |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_january_clean)
+```
+
+```{r}
+# Clean trees february
+trees_february_clean <- trees_february |> 
+  mutate(month = "February") |> 
+  mutate(month_val = 2) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(year=2014) |>
+  mutate(ch4_flag = ifelse(Flag == "Y", 1, 0)) |> # CH4 flag binary coding (0=no flag)
+  rename(surface = Type) |> 
+  rename(methane = CH4ppm) |> 
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_february |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_february_clean)
+```
+
+```{r}
+# Clean trees march
+trees_march_clean <- trees_march |> 
+  mutate(month = "March") |> 
+  mutate(month_val = 3) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(ch4_flag = ifelse(Flag == "y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  mutate(year=2014) |>
+  rename(surface = Type) |> 
+  rename(methane = CH4ppm) |> 
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_march |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_march_clean)
+```
+
+```{r}
+# Clean trees april 
+trees_april_clean <- trees_april |> 
+  mutate(month = "April") |> 
+  mutate(month_val = 4) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(ch4_flag = ifelse(Flag == "y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  mutate(year=2014) |>
+  rename(surface = Type) |> 
+  mutate(methane = CH4*.1434-1.4924) |>       # Conversion to CH4 ppm
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_april |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_april_clean)
+```
+
+```{r}
+# Clean trees may 14 
+trees_may14_clean <- trees_may14 |> 
+  mutate(month = "May") |> 
+  mutate(month_val = 5) |> 
+  rename(tree_id = Tree) |>
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(ch4_flag = ifelse(Flag == "y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  mutate(year=2014) |>
+  rename(surface = Type) |> 
+  mutate(methane = CH4*.1405-2.1291) |>       # Conversion to CH4 ppm
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_may14 |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+
+glimpse(trees_may14_clean)
+```
+
+```{r}
+# Clean trees june 14 
+trees_june14_clean <- trees_june14 |> 
+  mutate(month = "June") |> 
+  mutate(month_val = 6) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(ch4_flag = ifelse(Flag == "y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  mutate(year=2014) |>
+  rename(surface = Type) |> 
+  mutate(methane = CH4*.1105-1.5501) |>       # Conversion to CH4 ppm
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_june14 |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_june14_clean)
+```
+
+```{r}
+# Clean trees july 14 
+trees_july14_clean <- trees_july14 |> 
+  mutate(month = "July") |> 
+  mutate(month_val = 7) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(ch4_flag = ifelse(Flag == "y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  mutate(year=2014) |>
+  rename(surface = Type) |> 
+  mutate(methane = CH4*.1461-2.7855) |>       # Conversion to CH4 ppm
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_july14 |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_july14_clean)
+```
+
+```{r}
+# Clean trees august 14 
+trees_august14_clean <- trees_august14 |> 
+  mutate(month = "August") |> 
+  mutate(month_val = 8) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(ch4_flag = ifelse(Flag == "y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  mutate(year=2014) |>
+  rename(surface = Type) |> 
+  mutate(methane = CH4*.002-4.0423) |>       # Conversion to CH4 ppm
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_august14 |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_august14_clean)
+```
+
+```{r}
+# Clean trees september 14 
+trees_september14_clean <- trees_september14 |> 
+  mutate(month = "September") |> 
+  mutate(month_val = 9) |> 
+  rename(tree_id = Tree) |>
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(ch4_flag = ifelse(Flag == "y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  mutate(year = 2014) |>
+  rename(surface = Type) |> 
+  mutate(methane = CH4 * .002 - 2.1549) |>
+  filter(!is.na(suppressWarnings(as.numeric(Time)))) |> # Error caused by NAs
+  mutate(total_mins = as.numeric(Time) * 24 * 60,
+         hours = floor(total_mins / 60),
+         mins = round(total_mins %% 60),
+         time_proper = as_hms(sprintf("%02d:%02d:00", hours, mins)),
+         time_min = hours + (mins / 60)) |>
+  left_join(
+    weather_september14 |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_september14_clean)
+```
+
+```{r}
+# Clean trees october 14 
+trees_october14_clean <- trees_october14 |> 
+  mutate(month = "October") |> 
+  mutate(month_val = 10) |> 
+  rename(tree_id = Tree) |> 
+  mutate(tree_num = str_remove(tree_id, "[A-Za-z]+$")) |>
+  mutate(ch4_flag = ifelse(Flag == "y", 0, 1)) |> # CH4 flag binary coding (0=no flag)
+  mutate(year=2014) |>
+  rename(surface = Type) |> 
+  mutate(methane = CH4ppm) |>
+  mutate(time_proper = as.POSIXct(Time, format = "%H:%M")) |>
+  mutate(time_min = as.numeric(format(time_proper, "%H")) + 
+           as.numeric(format(time_proper, "%M")) / 60) |> 
+  mutate(time_proper = round_hms(as_hms(time_proper), secs = 60)) |> 
+  left_join(
+    weather_october14 |> select(tree_id, soil, stem), 
+    by = c("tree_num" = "tree_id")
+  ) |>
+  select(month, year, tree_id, tree_num, surface, time_min, methane, ch4_flag, time_proper, month_val, soil, stem)
+
+glimpse(trees_october14_clean)
+```
+
+## Appending the datasets
+
+```{r}
+# Important: This is a very short and deceptively simple line of code; you must ensure all of the dataframes you're adding have identical structure (same columns with the same types)
+trees_clean <- bind_rows(trees_may_clean, trees_june_clean, trees_july_clean, trees_august_clean, trees_september_clean, trees_november_clean, trees_january_clean, trees_february_clean, trees_march_clean, trees_april_clean, trees_may14_clean, trees_june14_clean, trees_july14_clean, trees_august14_clean, trees_september14_clean, trees_october14_clean) |> 
+  mutate(surface = str_replace_all(surface, "tree", "stem")) |> # Replace stem -> tree
+  filter(!str_detect(tree_id, regex("amb"))) |> # remove amb from tree_id
+  filter(!str_detect(surface, regex("pore"))) |>  #remove pore measurements
+  mutate(tree_id = str_to_lower(tree_id)) # fix capitalization of tree_id
+```
+
+```{r}
+# This is just a check to see the "cleanness" of the dataset. We want to have as few NA values as possible, and want to make sure the unique tree_id vals and surface vals are exactly what we want.
+
+unique(trees_clean$tree_id)
+unique(trees_clean$surface)
+sum(is.na(trees_clean$methane))
+sum(is.na(trees_clean$time_min))
+sum(is.na(trees_clean$time_proper))
+```
+
+```{r}
+trees_clean_testing <- bind_rows(trees_may_clean, trees_june_clean, trees_july_clean, trees_august_clean, trees_september_clean, trees_november_clean, trees_january_clean, trees_february_clean, trees_march_clean, trees_april_clean, trees_may14_clean, trees_june14_clean, trees_july14_clean, trees_august14_clean, trees_september14_clean, trees_october14_clean) |> 
+  mutate(surface = str_replace_all(surface, "tree", "stem")) |> # Replace stem -> tree
+  filter(!str_detect(tree_id, regex("amb"))) |> # remove amb from tree_id
+  filter(!str_detect(surface, regex("pore"))) |>  #remove pore measurements
+  mutate(tree_id = str_to_lower(tree_id)) |>  # fix capitalization of tree_id
+  left_join(chambers_clean |> select(tree_id, surface, area_m2, volume_m3),
+            by = c("tree_id", "surface"))
+```
+
+## Functions and testing
+
+```{r}
+# Function to create models
+
+#a function call is displayed, but needs to include 3 parameters: month (numerical), tree_id (which tree you want to see the regression of), and type (soil, tree)
+
+create_model <- function(month_num, year_num, tree_id_val, type_val) { # Takes aforementioned parameters
+  reduced_data <- trees_clean |> #makes a dummy dataset
+  filter(month_val == month_num) |> # narrows down to month
+  filter(year == year_num) |> # narrows down to year
+  filter(tree_id == tree_id_val) |> # narrows down to tree_id
+  filter(surface == type_val) # narrows down type
+  
+  reduced_model <- lm(methane ~ time_min, data=reduced_data) # produce and save a model
+  print(summary(reduced_model)) # output is summary(model)
+
+}
+```
+
+```{r}
+# Test of create_model()
+create_model(7, 2013, "1602", "soil")
+```
+
+```{r}
+build_graph <- function(month_num, year_num, tree_id_val, type_val) {
+  reduced_data <- trees_clean |>
+  filter(month_val == month_num) |> 
+  filter(year == year_num) |> 
+  filter(tree_id == tree_id_val) |> 
+  filter(surface == type_val)
+  
+  # Getting names for graph
+  title_var <- paste(reduced_data$month[1], year_num, tree_id_val, type_val) # making title "Month tree_id and type"
+  reduced_model <- lm(methane ~ time_min, data=reduced_data)
+  intercept <- coef(reduced_model)["(Intercept)"] # save intercept for equation
+  slope <- coef(reduced_model)["time_min"] # save slope for equation
+  r2 <- summary(reduced_model)$r.squared # save r2 for equation
+  label <- paste0("y = ", round(slope, 4), "x + ", round(intercept, 4),
+                "\nR² = ", round(r2, 3)) # build the label of the equation
+
+  #creating the plot
+  ggplot(reduced_data, aes(x=time_proper, y=methane))+
+  geom_point()+ 
+  geom_smooth(method="lm", se=F) + # adding the line
+  labs(title = title_var, # title_var defined earlier in function
+       x="time of day", # manual input of x label
+       y = expression(CH[4]~ppm)) + # subscript of CH4
+  geom_label(x = -Inf, y = Inf, label = label, hjust = 0, vjust = 1) + # adding equation
+  theme_bw()
+}
+```
+
+```{r}
+# Test of function build_graph()
+build_graph(8, 2013, "1606", "soil")
+```
+
+```{r}
+master_table <- trees_clean |>
+  filter(tolower(str_trim(surface)) %in% c("soil", "stem")) |> # choose only soil/tree type
+  filter(!is.na(methane), !is.na(time_min)) |> # get rid of NA values
+  group_by(month, year, month_val, tree_id, surface) |> # grouping by relevant variables
+  summarise(
+    model = list(lm(methane ~ time_min)), # a list of the items from a linear model in data
+    .groups = "drop"
+  ) |>
+  mutate(
+    slope = sapply(model, function(m) coef(m)["time_min"]), # define and give value to slope
+    r2    = sapply(model, function(m) summary(m)$r.squared), # define and give val to r2
+    p_val = sapply(model, function(m) glance(m)$p.value) # define and give val to p_val
+  ) |>
+  select(-model) |> # deselect model (list of values from linear regression)
+  mutate( # rounding the important numbers
+    slope     = round(slope, 4), 
+    p_val     = round(p_val, 4),
+    r2        = round(r2, 4),
+    month_num = match(month, month.name)
+  ) |>
+  rename( # renaming the columns for presentability
+    "surface" = surface,
+    "slope (ppm/hr)"  = slope,
+    "r^2"      = r2,
+    "p-value" = p_val
+  ) |>
+  arrange(month_num, tree_id) |> 
+  select(!month_num)
+```
+
+```{r}
+master_table_testing <- trees_clean_testing |>
+  filter(tolower(str_trim(surface)) %in% c("soil", "stem")) |>
+  filter(!is.na(methane), !is.na(time_min)) |>
+  mutate(temp = if_else(surface == "soil", soil, stem)) |>
+  group_by(month, year, month_val, tree_id, surface, temp, area_m2, volume_m3) |>
+  summarise(
+    model       = list(lm(methane ~ time_min)),
+    flag_good   = sum(ch4_flag == 0, na.rm = TRUE),   # count of good (0) flags
+    flag_bad    = sum(ch4_flag == 1, na.rm = TRUE),   # count of bad (1) flags
+    flag_absent = sum(is.na(ch4_flag)),               # count of missing flag info
+    total_n     = n(),                                # total rows in this group
+    .groups = "drop"
+  ) |>
+  mutate(
+    slope = sapply(model, function(m) coef(m)["time_min"]),
+    r2    = sapply(model, function(m) summary(m)$r.squared),
+    p_val = sapply(model, function(m) glance(m)$p.value)
+  ) |>
+  select(-model) |>
+  mutate(
+    slope     = round(slope, 4),
+    p_val     = round(p_val, 4),
+    r2        = round(r2, 4),
+    month_num = match(month, month.name)
+  ) |>
+  rename(
+    "slope (ppm/hr)" = slope,
+    "r^2"            = r2,
+    "p-value"        = p_val
+  ) |> 
+  mutate(flux = (`slope (ppm/hr)` * volume_m3) / (area_m2*0.0000821*temp)) |>
+  arrange(month_num, tree_id) |> 
+  select(!month_num)
+```
+
+```{r}
+trees_clean_filtered <- trees_clean_testing |> 
+  filter(ch4_flag == 0 | is.na(ch4_flag))
+
+master_table_filtered <- trees_clean_filtered |>
+  filter(tolower(str_trim(surface)) %in% c("soil", "stem")) |>
+  filter(!is.na(methane), !is.na(time_min)) |>
+  mutate(temp = if_else(surface == "soil", soil, stem)) |>
+  group_by(month, year, month_val, tree_id, surface, temp, area_m2, volume_m3) |>
+  summarise(
+    model       = list(lm(methane ~ time_min)),
+    flag_good   = sum(ch4_flag == 0, na.rm = TRUE),   # count of good (0) flags
+    flag_absent = sum(is.na(ch4_flag)),               # count of missing flag info
+    total_n_used     = n(),                           # total rows in this group
+    .groups = "drop"
+  ) |>
+  mutate(
+    slope = sapply(model, function(m) coef(m)["time_min"]),
+    r2    = sapply(model, function(m) summary(m)$r.squared),
+    p_val = sapply(model, function(m) glance(m)$p.value)
+  ) |>
+  select(-model) |>
+  mutate(
+    slope     = round(slope, 4),
+    p_val     = round(p_val, 4),
+    r2        = round(r2, 4),
+    month_num = match(month, month.name)
+  ) |>
+  rename(
+    "slope (ppm/hr)" = slope,
+    "r^2"            = r2,
+    "p-value"        = p_val
+  ) |> 
+  mutate(flux = (`slope (ppm/hr)` * volume_m3) / (area_m2*0.0000821*temp)) |>
+  arrange(month_num, tree_id) |> 
+  select(!month_num)
+```
+
+```{r}
+# Filtered distribution
+ggplot(master_table_filtered, aes(x=flux))+
+  geom_histogram()+
+  labs(title="Filtered flux distribution")+
+  theme_bw()
+
+# Non-filtered distribution
+ggplot(master_table_testing, aes(x=flux))+
+  geom_histogram()+
+  labs(title="Non-filtered flux distribution")+
+  theme_bw()
+```
+
+```{r}
+# SURFACE group summaries
+surface_summary <- master_table_filtered |> 
+  group_by(surface) |> 
+  summarise(
+    n      = n(),
+    mean   = round(mean(flux), 4),
+    median = round(median(flux), 4),
+    sd     = round(sd(flux), 4),
+    min    = round(min(flux), 4),
+    max    = round(max(flux), 4),
+    .groups = "drop"
+  )
+
+surface_summary
+
+
+month_summary <- master_table_filtered |> 
+  group_by(month_val,surface) |> 
+  summarise(
+    n      = n(),
+    mean   = round(mean(flux), 4),
+    median = round(median(flux), 4),
+    sd     = round(sd(flux), 4),
+    min    = round(min(flux), 4),
+    max    = round(max(flux), 4),
+    .groups = "drop"
+  )
+
+month_summary
+```
+
+```{r}
+# Scatterplot by temperature
+ggplot(master_table_filtered, aes(x=temp, y=flux))+
+  geom_point()+
+  theme_bw()+
+  geom_smooth(method="lm")
+
+# Boxplots by soil/stem
+ggplot(master_table_filtered, aes(x=surface, y=flux))+
+  geom_boxplot()+
+  theme_bw()+
+  coord_cartesian(ylim = c(0, 200)) # note - just to see the comparison better (outliers NA)
+```
+
+## Exportable graphs
+
+```{r}
+# only run once, will produce a large pdf with all graphs
+
+pdf("all_graphs.pdf", width = 8, height = 5)
+master_table |>
+  rowwise() |>
+  group_walk(~ print(build_graph(.$month_val, .$year, .$tree_id, .$surface)))
+dev.off()
+```
+
+```{r}
+write_csv(master_table_testing, file="fluxes_unfiltered.csv")
+write_csv(master_table_filtered, file="fluxes_filtered.csv")
+```
+
+## Extra (by month)
+
+```{r}
+# Not complete/working
+
+trees_clean |> 
+  group_by(month) |> 
+  summarize(mean=mean(methane, na.rm=T), median=median(methane,na.rm=T), 
+            sd=sd(methane,na.rm=T), n=n()) |> 
+  arrange(desc(mean))
+
+trees_clean |> 
+  group_by(surface) |> 
+  summarize(mean=mean(methane, na.rm=T), median=median(methane,na.rm=T), 
+            sd=sd(methane,na.rm=T), n=n()) |> 
+  arrange(desc(mean))
+
+trees_clean |> 
+  group_by(tree_id) |> 
+  summarize(mean=mean(methane, na.rm=T), median=median(methane,na.rm=T), 
+            sd=sd(methane,na.rm=T), n=n()) |> 
+  arrange(desc(mean))
+```
+
+## Anomalies/Extra Things
+
+1.  May 2013, June 2013, July 2013 have doubled CH4 ppm emissions.
+
+## Added Temperature Values
+
+-   t
+
+## Added Area/Volume Values
+
+-   1617 volume stem - manually added, was in data but in wrong place
+
+-   1602 volume/area stem, 1614 volume/area stem, 1616 volume/area stem - all values added from their corresponding "a" tree_id

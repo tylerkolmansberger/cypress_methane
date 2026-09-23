@@ -1,0 +1,642 @@
+---
+title: "Flux Analysis"
+format: html
+embed-resources: true
+editor: visual
+---
+
+## Flux Analysis - July 15, 2026
+
+```{r}
+library(tidyverse)
+library(patchwork)
+library(readxl)
+```
+
+```{r}
+# Reading in data
+filtered_data <- read.csv("data/fluxes_filtered.csv")
+unfiltered_data <- read.csv("data/fluxes_unfiltered.csv")
+
+# DBH data
+dbh_raw <- read_excel("data_raw/DBH and circumference measurements_up tree.xlsx", sheet="diameter & circum. up trees") |>
+  select(1, 2, 4)
+
+dbh_raw_other <- read_excel("data_raw/DBH and circumference measurements_up tree.xlsx", sheet="estimated for other trees") |>
+  select(1, 2, 4)
+```
+
+## Difference between unfiltered and filtered data
+
+```{r}
+head(filtered_data)
+head(unfiltered_data)
+```
+
+```{r}
+# Setting up code for identifying difference in flux calculations between the two datasets
+key_cols <- c("month", "year", "month_val", "tree_id", "surface") # Key variables
+value_col <- "flux"                                               # Measurement of interest
+
+diffs <- full_join(filtered_data, unfiltered_data, by = key_cols, suffix = c("_filt", "_unfilt")) |> 
+  filter(is.na(.data[[paste0(value_col, "_filt")]]) != is.na(.data[[paste0(value_col, "_unfilt")]]) |
+    (!is.na(.data[[paste0(value_col, "_filt")]]) & 
+     !is.na(.data[[paste0(value_col, "_unfilt")]]) & 
+     .data[[paste0(value_col, "_filt")]] != .data[[paste0(value_col, "_unfilt")]]))
+
+diffs <- diffs |> 
+  rename(filt_n = total_n_used) |> 
+  rename(unfilt_n = total_n) |> 
+  mutate(flux_diff = flux_unfilt-flux_filt) |> # Defining "difference" as Unfiltered-Filtered
+  select(month, year, tree_id, surface, flag_bad, filt_n, unfilt_n, flux_filt, flux_unfilt, flux_diff)
+
+glimpse(diffs)
+```
+
+```{r}
+ggplot(diffs, aes(x = flux_filt, y = flux_unfilt, color = surface, shape=month)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "tomato") +
+  labs(title = "Filtered vs. Unfiltered Flux",
+       x = "Unfiltered flux", y = "Filtered flux") +
+  #coord_cartesian(ylim = c(-75, 75))+
+  theme_bw()
+```
+
+```{r}
+ggplot(diffs, aes(x = factor(flag_bad), y = flux_diff, fill = surface)) +
+  geom_boxplot() +
+  labs(x = "flag_bad", y = "Flux difference (filt - unfilt)") +
+  #coord_cartesian(ylim = c(0, 100))+ # gets rid of large outliers
+  theme_minimal()
+```
+
+```{r}
+# Summary stats
+
+```
+
+```{r}
+ggplot(filtered_data, aes(x=surface, y=flux))+
+  geom_boxplot()+
+  #coord_cartesian(ylim = c(0, 50))+
+  theme_minimal()
+```
+
+```{r}
+# Getting means and sd for fluxes
+
+flux_summary <- filtered_data |>
+  group_by(date, surface) |>
+  summarise(
+    mean_flux = mean(flux, na.rm = TRUE),
+    sd_flux   = sd(flux, na.rm = TRUE),
+    n         = n(),
+    se_flux   = sd_flux / sqrt(n),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Plot 1 USED
+
+ggplot(flux_summary, aes(x = date, y = mean_flux, color = surface)) +
+  geom_line(linewidth = 0.5) +
+  geom_point(size = 2) +
+  geom_errorbar(
+    aes(ymin = mean_flux - se_flux, ymax = mean_flux + se_flux),
+    width = 5,
+    linewidth = 0.5
+  ) +
+  scale_color_manual(values = c("soil" = "#E1BE6A", "stem" = "#668A44")) +
+  labs(
+    title = "Average Methane Flux Over Time by Surface Type",
+    subtitle = "Error bars represent ± standard error of the mean",
+    x = "Date",
+    y = "Mean Flux",
+    color = "Surface"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Fluxes change over time
+
+```{r}
+# Including a date variable
+filtered_data$date <- as.Date(paste(filtered_data$month, "1", filtered_data$year), format = "%B %d %Y")
+
+# Creating height variable/tree_num for graphs
+filtered_data <- filtered_data |> 
+  mutate(
+    tree_num = str_extract(tree_id, "^[0-9]{4}"),
+    height   = str_extract(tree_id, "[a-zA-Z]$"),
+    height   = ifelse(is.na(height), "a", height)
+  )
+
+# Factors of month (for graphing clarity later)
+filtered_data <- filtered_data |>
+  mutate(month = factor(month, levels = month.name))
+```
+
+```{r}
+trees_only<-filtered_data |> 
+  filter(surface=="stem")
+
+soil_only<-filtered_data |> 
+  filter(surface=="soil")
+```
+
+```{r}
+# All trees over time
+trees_only |> 
+  filter(height=="a") |> 
+  ggplot(aes(x=date, y=flux, color=month))+
+  geom_point()+
+  theme_minimal()
+```
+
+```{r}
+# Specific tree over time
+tree_graph <- function(tree_number){
+  trees_only |> 
+    filter(tree_num == tree_number) |>
+    filter(height=="a") |> 
+    ggplot(aes(x=date, y=flux, color=month))+
+    geom_point()+
+    theme_minimal()
+}
+
+tree_graph(1606)
+```
+
+```{r}
+ggplot(trees_only, aes(x=date, y=flux, color=tree_num))+
+  geom_point()+
+  geom_smooth(se=F)+
+  theme_minimal()
+```
+
+```{r}
+# Patchwork graphs for all trees and months at once
+
+trees_only <- trees_only |>
+  mutate(tree_num = as.character(tree_num))
+
+tree_list <- unique(trees_only$tree_num)
+
+plot_list <- lapply(tree_list, function(t) {
+  trees_only |>
+    filter(tree_num == t) |>
+    filter(height=="a") |> 
+    ggplot(aes(x = date, y = flux)) +
+    geom_point() +
+    geom_line() +
+    labs(title = paste("Tree", t), x = NULL, y = NULL) +
+    theme_minimal(base_size = 9)
+})
+
+wrap_plots(plot_list, ncol = 4) +
+  plot_annotation(
+    title = "Flux over time by tree",
+    theme = theme(plot.title = element_text(size = 14, face = "bold")))
+```
+
+```{r}
+plot_list <- lapply(tree_list, function(t) {
+  trees_only |>
+    filter(tree_num == t, height == "a") |>
+    ggplot(aes(x = date, y = flux)) +
+    geom_line(color = "gray", linewidth = 0.4) +
+    geom_point(size = 1.5) +
+    labs(title = paste("Tree", t), x = NULL, y = NULL) +
+    theme_minimal(base_size = 9) +
+    theme(
+      plot.title = element_text(face = "bold", size = 10, hjust = 0.5),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(size = 7)
+    )
+})
+
+wrap_plots(plot_list, ncol = 4) +
+  plot_annotation(
+    title = "Flux over Time by Tree",
+    theme = theme(plot.title = element_text(size = 14, face = "bold"))
+  )
+```
+
+```{r}
+# Soil changes over time
+soil_only |> 
+  ggplot(aes(x=date, y=flux, color=month))+
+  geom_point()+
+  theme_minimal()
+```
+
+```{r}
+# Specific tree over time
+soil_graph <- function(soil_id){
+  soil_only |> 
+    filter(tree_id == soil_id) |>
+    ggplot(aes(x=date, y=flux, color=month))+
+    geom_point()+
+    theme_minimal()
+}
+
+soil_graph(1602)
+```
+
+```{r}
+ggplot(soil_only, aes(x=date, y=flux, color=tree_num))+
+  geom_point()+
+  geom_line()+
+  #coord_cartesian(ylim = c(-600, 600))+
+  theme_minimal()
+```
+
+```{r}
+# Patchwork graphs for all months at once
+soil_list <- unique(soil_only$tree_id)
+
+plot_list_s <- lapply(soil_list, function(s) {
+  soil_only |>
+    filter(tree_id == s) |>
+    ggplot(aes(x = date, y = flux)) +
+    geom_line(color = "gray", linewidth = 0.4) +
+    geom_point(size = 1.5) +
+    labs(title = paste("Soil", s), x = NULL, y = NULL) +
+    theme_minimal(base_size = 9) +
+    theme(
+      plot.title = element_text(face = "bold", size = 10, hjust = 0.5),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(size = 7)
+    )
+})
+
+wrap_plots(plot_list_s, ncol = 4) +
+  plot_annotation(
+    title = "Flux over Time by Soil Plot",
+    theme = theme(plot.title = element_text(size = 14, face = "bold"))
+  )
+```
+
+## How do fluxes vary with height on stem?
+
+```{r}
+# Months broken out with trends in height
+
+trees_height <- trees_only |> 
+  filter(tree_num %in% c("1602", "1614", "1616")) |> # Three trees with ABCDE heights
+  filter(date!="2013-05-01") |> # Only taken from A height
+  mutate(tree_num = factor(tree_num, levels = c("1602", "1614", "1616")))
+
+date_list <- sort(unique(trees_height$date))
+
+plot_list_m <- lapply(date_list, function(d) {
+  trees_height |>
+    filter(date == d) |>
+    ggplot(aes(x = height, y = flux, color = tree_num)) +
+    geom_point() +
+    labs(title = format(d, "%B %Y"), x = NULL, y = NULL) +
+    theme_minimal(base_size = 9)
+})
+
+wrap_plots(plot_list_m, ncol = 4) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+# Extra legend is because of June 2014 - can fix but didn't prioritize this week
+```
+
+```{r}
+# Height trends generally
+ggplot(trees_height, aes(x= height, y= flux, color = date))+
+  geom_point()+
+  coord_cartesian(ylim = c(0, 75))+ # Removes several large outliers
+  theme_minimal()
+```
+
+```{r}
+# Attempt at displaying bargraph
+
+trees_height_factor <- trees_only |> 
+  filter(tree_num %in% c("1602", "1614", "1616")) |>
+  filter(date!="2013-05-01") |> 
+  mutate(height = factor(height, levels = c("a", "b", "c", "d", "e")), 
+         date_factor = factor(date))
+
+tree_list <- unique(trees_height_factor$tree_num)
+
+plot_list_bar <- lapply(tree_list, function(tn) {
+  trees_height_factor |>
+    filter(tree_num == tn) |>
+    ggplot(aes(x = date_factor, y = flux, fill = height)) +
+    geom_col(position="dodge") +
+    labs(title = paste("Tree", tn), x = NULL, y = NULL) +
+    theme_minimal(base_size = 9) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+})
+
+wrap_plots(plot_list_bar, ncol = 1) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+```
+
+## Variability among different trees and same height
+
+```{r}
+# Variability for A
+
+trees_height_factor |> 
+  filter(height=="a") |> 
+  ggplot(aes(x=date, y=flux,color=tree_num))+
+  geom_point()+
+  geom_line()+
+  labs(title="Height A variability") +
+  theme_minimal()
+```
+
+```{r}
+# Variability for B
+
+trees_height_factor |> 
+  filter(height=="b") |> 
+  ggplot(aes(x=date, y=flux,color=tree_num))+
+  geom_point()+
+  geom_line()+
+  labs(title="Height B variability") +
+  theme_minimal()
+```
+
+```{r}
+# Variability for C
+
+trees_height_factor |> 
+  filter(height=="c") |> 
+  ggplot(aes(x=date, y=flux,color=tree_num))+
+  geom_point()+
+  geom_line()+
+  labs(title="Height C variability") +
+  theme_minimal()
+```
+
+```{r}
+# Variability for D
+
+trees_height_factor |> 
+  filter(height=="d") |> 
+  ggplot(aes(x=date, y=flux,color=tree_num))+
+  geom_point()+
+  geom_line()+
+  labs(title="Height D variability") +
+  theme_minimal()
+```
+
+```{r}
+# Variability for E
+
+trees_height_factor |> 
+  filter(height=="e") |> 
+  ggplot(aes(x=date, y=flux,color=tree_num))+
+  geom_point()+
+  geom_line()+
+  labs(title="Height E variability") +
+  theme_minimal()
+```
+
+```{r}
+# Histogram for A
+
+trees_height_factor |> 
+  filter(height == "a") |> 
+  ggplot(aes(x = flux, fill = tree_num)) +
+  geom_histogram(bins = 20) +
+  labs(title = "Variability at Height A") +
+  theme_minimal()
+```
+
+```{r}
+# Histogram for B
+
+trees_height_factor |> 
+  filter(height == "b") |> 
+  ggplot(aes(x = flux, fill = tree_num)) +
+  geom_histogram(bins = 20) +
+  labs(title = "Variability at Height B") +
+  theme_minimal()
+```
+
+```{r}
+# Histogram for C
+
+trees_height_factor |> 
+  filter(height == "c") |> 
+  ggplot(aes(x = flux, fill = tree_num)) +
+  geom_histogram(bins = 20) +
+  labs(title = "Variability at Height C") +
+  theme_minimal()
+```
+
+```{r}
+# Histogram for D
+
+trees_height_factor |> 
+  filter(height == "d") |> 
+  ggplot(aes(x = flux, fill = tree_num)) +
+  geom_histogram(bins = 20) +
+  labs(title = "Variability at Height D") +
+  theme_minimal()
+```
+
+```{r}
+# Histogram for E
+
+trees_height_factor |> 
+  filter(height == "e") |> 
+  ggplot(aes(x = flux, fill = tree_num)) +
+  geom_histogram(bins = 20) +
+  labs(title = "Variability at Height E") +
+  theme_minimal()
+```
+
+```{r}
+heights_cm <- tibble(
+  height = c("a", "b", "c", "d", "e"),
+  height_cm = c(45, 95, 145, 195, 345)
+)
+
+heights_cm
+
+trees_height_factor <- trees_height_factor |> 
+  left_join(heights_cm, by = "height")
+```
+
+```{r}
+trees_height_fraction <- trees_height_factor |>
+  filter(surface == "stem") |>
+  group_by(tree_num, year, month) |>
+  mutate(
+    flux_a = flux[height == "a"][1],
+    flux_fraction = flux / flux_a
+  ) |>
+  ungroup()
+```
+
+```{r}
+ggplot(trees_height_fraction, aes(x = height_cm, y = flux_fraction, color=tree_num))+
+  geom_point()+
+  theme_minimal()
+```
+
+```{r}
+# USED , figure 3
+
+ggplot(trees_height_fraction, aes(x = height_cm, y = flux_fraction, color = tree_num)) +
+  geom_jitter(width = 5, size = 2.5, alpha = 0.75) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "darkgrey") +
+  scale_x_continuous(breaks = c(45, 95, 145, 195, 345)) +
+  scale_color_manual(values = c("1602" = "#668A44", "1614" = "#7BCFD4", "1616" = "#E1BE6A")) +
+  labs(
+    title = "Methane Flux Reduction by Tree Height",
+    subtitle = "Flux expressed as a fraction relative to the lowest measurement height (45 cm)",
+    x = "Height (cm)",
+    y = "Flux Fraction (relative to height A)",
+    color = "Tree ID"
+  ) +
+  theme_minimal(base_size = 13) +
+  #geom_smooth(method="lm",se=F, alpha=.5)+
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    panel.grid.minor = element_blank(),
+    legend.position = "right"
+  )
+```
+
+```{r}
+# Attempt at time series (not used)
+
+y_range <- range(trees_height_fraction$flux_fraction, na.rm = TRUE)
+x_breaks <- c(45, 95, 145, 195, 345)
+
+plot_list_poster <- lapply(date_list, function(d) {
+  trees_height_fraction |>
+    filter(date == d) |>
+    ggplot(aes(x = height_cm, y = flux_fraction, color = tree_num)) +
+    geom_point(size = 1.8, alpha = 0.85) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray60", linewidth = 0.3) +
+    coord_cartesian(ylim = y_range) + #this is problem
+    scale_x_continuous(breaks = x_breaks) +
+    scale_color_manual(values = c("1602" = "#668A44", "1614" = "#7BCFD4", "1616" = "#E1BE6A")) +
+    labs(title = format(d, "%B %Y"), x = NULL, y = NULL) +
+    theme_minimal(base_size = 9) +
+    theme(
+      plot.title = element_text(face = "bold", size = 10, hjust = 0.5),
+      panel.grid.minor = element_blank(),
+      axis.text = element_text(size = 7)
+    )
+})
+
+wrap_plots(plot_list_poster, ncol = 4) +
+  plot_layout(guides = "collect", axis_titles = "collect") +
+  plot_annotation(
+    title = "Methane Flux Fraction by Tree Height Across Sampling Dates",
+    subtitle = "Flux expressed relative to height A (45 cm); dashed line marks no reduction",
+    theme = theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 10, color = "gray40")
+    )
+  ) &
+  theme(legend.position = "right") &
+  labs(x = "Height (cm)", y = "Flux Fraction")
+```
+
+## Variability among different soils near free base
+
+```{r}
+plot_list_hist_s <- lapply(soil_list, function(s) {
+  soil_only |>
+    filter(tree_id == s) |>
+    ggplot(aes(x = flux)) +
+    geom_histogram(bins = 20) +
+    labs(title = paste("Soil", s), x = NULL, y = NULL) +
+    theme_minimal(base_size = 9)
+})
+
+wrap_plots(plot_list_hist_s, ncol = 3) +
+  plot_annotation(
+    title = "Flux Variability by Soil",
+    theme = theme(plot.title = element_text(size = 14, face = "bold"))
+  )
+```
+
+## Are tree fluxes related to tree DBH? (at 130 cm)
+
+```{r}
+dbh_combined <- bind_rows(dbh_raw, dbh_raw_other)
+
+dbh_clean <- dbh_combined |> 
+  rename(height = `Height (cm)`) |> 
+  mutate(tree_num= as.factor(Tree)) |> 
+  rename(dbh = `diameter (cm)`) |> 
+  filter(height == 130) |> 
+  select(tree_num, dbh)
+
+dbh_flux <- left_join(trees_only, dbh_clean, by="tree_num") |> 
+  filter(height=="a")
+```
+
+```{r}
+# USED, figure 2
+
+dbh_flux <- dbh_flux |>
+  mutate(
+    season = case_when(
+      month_val %in% c(12, 1, 2) ~ "Winter",
+      month_val %in% c(3, 4, 5)  ~ "Spring",
+      month_val %in% c(6, 7, 8)  ~ "Summer",
+      month_val %in% c(9, 10, 11) ~ "Fall"
+    ),
+    season = factor(season, levels = c("Winter", "Spring", "Summer", "Fall"))
+  )
+
+
+ggplot(dbh_flux, aes(x = dbh, y = flux, color = season)) +
+  geom_point(size = 2, alpha = 0.75) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_color_manual(values = c(
+    "Winter" = "#40B0A6",
+    "Fall" = "#668A44",
+    "Summer" = "#E1BE6A",
+    "Spring"   = "#7BCFD4"
+  )) +
+  geom_smooth(method="lm",se=F)+
+  labs(
+    title = "Flux Variation by DBH at 45 cm",
+    subtitle = "Colored by season of measurement",
+    x = "Diameter at Breast Height (cm)",
+    y = "Flux",
+    color = "Season",
+    caption = "y scale manually set 0-100 to see lines clearly."
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    panel.grid.minor = element_blank(),
+    legend.position = "right"
+  )+
+  theme(
+  panel.background = element_rect(fill = "transparent", color = NA),
+  plot.background = element_rect(fill = "transparent", color = NA),
+  legend.background = element_rect(fill = "transparent", color = NA),
+  legend.box.background = element_rect(fill = "transparent", color = NA)
+)
+
+```
+
+```{r}
+# Tibble
+
+```

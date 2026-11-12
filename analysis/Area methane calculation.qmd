@@ -1,0 +1,420 @@
+---
+title: "Methane Area Calculation"
+format: typst
+editor: visual
+---
+
+## Packages
+
+```{r}
+library(tidyverse)
+library(readr)
+library(readxl)
+```
+
+## Loading in Data
+
+```{r}
+getwd()
+tree_height_complete <- read_csv("data/tree_height_analysis.csv")
+fluxes_filtered <- read_csv("data/fluxes_filtered.csv")
+tree_specs <- read_excel("data/data_raw/DBH and circumference measurements_up tree.xlsx", sheet="raw data")
+```
+
+```{r}
+# Adding back in the height_cm variable:
+
+# Assigning heights to temporary tibble
+heights_cm <- tibble(
+  height = c("a", "b", "c", "d", "e"),
+  height_cm = c(45, 95, 145, 195, 345))
+heights_cm
+
+# Adding a "height" column, based on the a/b/c/d/e attached to tree_id
+fluxes_filtered <- fluxes_filtered |> 
+  mutate(
+    tree_num = str_extract(tree_id, "^[0-9]{4}"),
+    height   = str_extract(tree_id, "[a-zA-Z]$"),
+    height   = ifelse(is.na(height), "a", height)
+  )
+
+# Joining the temporary tibble to the new dataframe; all_height
+all_height <- fluxes_filtered |> 
+  filter(surface=="stem") |> 
+  left_join(heights_cm, by = "height")
+```
+
+## Finding the median multiplier (to be used for all other calculations where height wasn't measured)
+
+```{r}
+# Calculating the median and mean of the multiplier value. Note: the 'na.rm = T' indicates that we are only interested in the non-NA, or real, values of the multiplier - this is important because the multiplier was only calculated at one of the heights (45 cm), so every other height in this dataset is by default going to have a value of NA for the multipler column we're interested in.
+
+tree_height_complete |> 
+  summarize(median_multiplier=median(multiplier_a, na.rm=T), 
+            mean_multiplier=mean(multiplier_a, na.rm=T))
+
+# Histogram. Notice, binwdith = 0.3, and this is a stacked histogram to see the distributions of the multiplier at every tree at once.
+
+ggplot(tree_height_complete,
+       aes(x = multiplier_a, fill = factor(tree_num))) +
+  geom_histogram(binwidth = 0.3, color = "white") +
+  scale_fill_viridis_d(name = "Tree") +
+  labs(x = "Multiplier A", 
+       y = "Count",
+       title = "Stacked Histogram of Multiplier A Distribution by Tree") +
+  theme_minimal()
+
+# Unstacked histogram: in geom_histogram() function, 'position = "identity"' indicates to separately graph each of the trees; 'alpha = 0.5' indicates transparency of colors
+
+ggplot(tree_height_complete,
+       aes(x = multiplier_a, fill = factor(tree_num))) +
+  geom_histogram(binwidth = 0.3,
+                 position = "identity",
+                 alpha = 0.5,
+                 color = "white", linewidth = 0.2) +
+  scale_fill_viridis_d(name = "Tree") +
+  labs(title = "Distribution of Multiplier A by Tree",
+       x = "Multiplier A",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+The "multiplier" is the number that we're prepared to use to infer the total emission of a given tree after only measuring the surface area of a tree from 0-70cm, and the flux rate at 45 cm. The median multiplier is 1.45, while the mean multiplier is 2.15. Given that there was a right skew on a few outliers in the data, we will use the median as the best approximation of center of our data (see distribution on histograms).
+
+```{r}
+# Note: NAs are as follows:
+# Tree 1616, March 2014
+# Tree 1616, June 2014
+# Tree 1614, June 2014
+
+
+given_height_tree_total_methane <- tree_height_complete |> 
+  group_by(month, year, tree_num) |> 
+  filter(height_cm==45) |> 
+  select(tree_num, month, year, flux, total_tree_flux) |> 
+  rename(flux_45cm = flux)
+```
+
+## Tree Specs for all trees
+
+```{r}
+# Renaming all columns in tree_spec data
+
+# Important note: I am assuming the circumference is the best measurement. In the raw data, circumference and diameter disagreed by a small margin on the trees.
+
+tree_specs <- tree_specs |> 
+  rename(tree_num=Tree) |> 
+  rename(circum_bh_cm=`circumference BH`) |> 
+  rename(circum_30cm=`circumference 30cm`) |> 
+  rename(ground_area_circum_cm=`ground area (circumference)`) |> 
+  select(tree_num, circum_bh_cm, circum_30cm, ground_area_circum_cm)
+  
+```
+
+```{r}
+# This function  returns the bark surface area, in m^2, of the bottom 0-70 cm of a trunk
+
+# Inputs:
+#   C30   = trunk circumference at 30 cm height (cm)
+#   CBH   = trunk circumference at breast height (cm)
+#   h30   = height C30 was measured (default 30 cm)
+#   hBH   = height BH was measured (default 130 cm)
+#   h_top = top of the section we want (default 70 cm)
+
+area_0_70 <- function(C30, CBH, h30 = 30, hBH = 130, h_top = 70) {
+  
+  # Estimate circumference at 70 cm by straight-line interpolation between
+  # the two measured points. (CBH - C30) is the total change in circumference
+  # over the (hBH - h30) = 100 cm gap. (h_top - h30)/(hBH - h30) = 0.4 is how
+  # far up that gap 70 cm sits, so we add 40% of the change to C30
+  
+  C70 <- C30 + (CBH - C30) * (h_top - h30) / (hBH - h30)
+  
+  # Convert circumference to radius (C = 2*pi*r)
+  
+  r30 <- C30 / (2 * pi)
+  r70 <- C70 / (2 * pi)
+  
+  # Vertical height of the 30-70 cm section (40 cm)
+  sect <- h_top - h30
+  
+  # Slant height of the tapered section found with Pythagorean theorem from the vertical height and the drop in radius
+  slant <- sqrt(sect^2 + (r30 - r70)^2)
+  
+  # 0-30 cm: no measurement below 30 cm, so assume a straight cylinder at the 30 cm circumference. Cylinder side area = circumference x height
+  base  <- C30 * h30
+  
+  # 30-70 cm: a truncated cone (frustum). Its side area is the average of the top and bottom circumferences x the slant height
+  upper <- (C30 + C70) / 2 * slant
+  
+  # Add the two pieces (cm^2) and convert to m^2 (100 cm x 100 cm = 10,000)
+  (base + upper) / 10000
+}
+
+# Add a new column to tree_specs by running the function on every row, feeding it each tree's circumference at 30 cm and at breast height
+tree_specs <- tree_specs |>
+  mutate(surface_area_0_70_m2 = area_0_70(circum_30cm, circum_bh_cm))
+
+
+
+tree_specs |> select(tree_num, circum_30cm, circum_bh_cm, surface_area_0_70_m2)
+```
+
+```{r}
+# Averaging fluxes per tree
+flux45 <- all_height |>
+  filter(height_cm == 45) |>
+  group_by(tree_num, year, month) |>
+  mutate(tree_num=as.numeric(tree_num)) |> 
+  summarise(flux_45cm = mean(flux, na.rm = TRUE), .groups = "drop")
+
+unique(flux45$tree_num)
+```
+
+```{r}
+# Assigning the trees
+single_trees <- c(1604, 1605, 1606, 1609, 1610, 1611, 1612, 1615, 1617)
+# Assigning the multiplier
+mult_med <- 1.45
+
+# This function will filter down to single_trees, and then will join the tree_specs with surface area measurements by the tree_num. From there, I applied the equation of multiplying the flux rate by the surface area by the multiplier to estimate the total flux of each tree.
+
+tree_flux <- flux45 |>
+  filter(tree_num %in% single_trees) |>
+  left_join(tree_specs |> select(tree_num, surface_area_0_70_m2),
+            by = "tree_num") |>
+  mutate(flux_0_70_umol_s       = surface_area_0_70_m2 * flux_45cm,
+         total_tree_flux_umol_s = flux_0_70_umol_s * mult_med)
+
+# Adding a date variable
+tree_flux$date <- as.Date(paste(tree_flux$month, "1", tree_flux$year), format = "%B %d %Y")
+```
+
+```{r}
+ggplot(tree_flux, aes(x=date, y= total_tree_flux_umol_s, color=tree_num))+
+  geom_point()+
+  theme_bw()
+```
+
+```{r}
+avg_total_tree <- tree_flux |> 
+  dplyr::group_by(month) |> 
+  summarize(mean_tree_emission = mean(total_tree_flux_umol_s),
+            median_tree_emission = median(total_tree_flux_umol_s),
+            iqr_tree_emission = IQR(total_tree_flux_umol_s)
+  )
+```
+
+## Adding in Breast Height
+
+```{r}
+# calculating diameter (from circumference used)
+tree_specs <- tree_specs |>
+  mutate(dbh_cm = circum_bh_cm / pi)
+
+# joining the data
+tree_flux <- tree_flux |>
+  left_join(tree_specs |> select(tree_num, dbh_cm), by = "tree_num")
+
+tree_height_complete <- tree_height_complete |>
+  left_join(tree_specs |> select(tree_num, dbh_cm), by = "tree_num")
+```
+
+```{r}
+library(ggpmisc)
+ggplot(tree_flux, aes(x=dbh_cm, y=total_tree_flux_umol_s,color=month))+
+  geom_point()+
+  geom_smooth(method = "lm", se = F) + 
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~")),
+    parse = TRUE
+  )+
+  #coord_cartesian(ylim = c(NA, 100))+
+  labs(title = "Total tree flux by DBH of tree SINGLE HEIGHT TREES")
+
+
+ggplot(tree_height_complete, aes(x=dbh_cm, y=total_tree_flux,color=month))+
+  geom_point()+
+  geom_smooth(method = "lm", se = F) + 
+  stat_poly_eq(
+    formula = y ~ x,
+    aes(label = paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~")),
+    parse = TRUE
+  )+
+  #coord_cartesian(ylim = c(NA, 100))+
+  labs(title = "Total tree flux by DBH of tree MULTI HEIGHT TREES")
+
+tree_flux |>
+  group_by(tree_num, dbh_cm) |>
+  summarize(median_by_dbh = median(total_tree_flux_umol_s, na.rm = T),
+            .groups = "drop") |>
+  ggplot(aes(x = dbh_cm, y = median_by_dbh)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F) +
+  theme_bw() +
+  labs(x = "DBH (cm)", y = "Median whole tree flux",
+       title = "Median tree flux by DBH of tree")
+
+# The outlier is tree 1615 at just over 25cm.
+```
+
+heights measured: July: .579, June: .296, August: .147, May: .156
+
+heights not measured: July: 8.77, June: 3.31, August: .716, May: .618
+
+- 
+
+```{r}
+dbh_flux_lm <- lm(total_tree_flux_umol_s ~ dbh_cm + month, data=tree_flux)
+summary(dbh_flux_lm)
+
+dbh_june <- tree_flux |> 
+  pivot_longer(cols = c(month),
+               names_to = "source",
+               values_to = "emission") |>
+```
+
+## Extrapolating trees 1601, 1603, 1607, 1608, and 1613
+
+```{r}
+target_trees <- c(1601, 1603, 1607, 1608, 1613)
+mult_med <- 1.45
+
+# Median 45 cm flux per m^2 for each month (same as before)
+monthly_flux <- flux45 |>
+  group_by(year, month) |>
+  summarise(median_flux_45cm = median(flux_45cm, na.rm = TRUE),
+            q25 = quantile(flux_45cm, 0.25, na.rm = TRUE),
+            q75 = quantile(flux_45cm, 0.75, na.rm = TRUE),
+            n_trees = n(),
+            .groups = "drop")
+
+# A small function that does the calculation for ONE tree
+estimate_one_tree <- function(tree_id) {
+  this_tree <- tree_specs |> filter(tree_num == tree_id)
+  area <- this_tree$surface_area_0_70_m2
+  dbh  <- this_tree$dbh_cm
+  
+  monthly_flux |>
+    mutate(
+      tree_num               = tree_id,
+      dbh_cm                 = dbh,
+      surface_area_0_70_m2   = area,
+      flux_0_70_umol_s       = area * median_flux_45cm,
+      total_tree_flux_umol_s = flux_0_70_umol_s * mult_med,
+      total_low              = area * q25 * mult_med,
+      total_high             = area * q75 * mult_med
+    )
+}
+
+# Run it for each target tree and stack the results
+est_unmeasured <- bind_rows(lapply(target_trees, estimate_one_tree))
+```
+
+## Estimating total methane emission of ALL trees
+
+```{r}
+# 25th and 75th percentile multipliers (from all profiled trees)
+mult_q <- quantile(tree_height_complete$multiplier_a, c(0.25, 0.75), na.rm = TRUE)
+
+tree_flux <- tree_flux |>
+  mutate(
+    total_low  = flux_0_70_umol_s * mult_q[[1]],
+    total_high = flux_0_70_umol_s * mult_q[[2]]
+  )
+
+profiled <- tree_height_complete |> 
+  ungroup() |>
+  distinct(tree_num, year, month, total_tree_flux) |>
+  transmute(tree_num, year, month,
+            total_tree_flux_umol_s = total_tree_flux,
+            total_low  = total_tree_flux,
+            total_high = total_tree_flux,
+            source = "measured profile")
+
+single <- tree_flux |>
+  transmute(tree_num, year, month, total_tree_flux_umol_s,
+            total_low, total_high,
+            source = "single chamber x 1.45")
+
+unmeasured <- est_unmeasured |>
+  transmute(tree_num, year, month, total_tree_flux_umol_s,
+            total_low, total_high,
+            source = "estimated from median flux")
+
+all_est <- bind_rows(profiled, single, unmeasured)
+```
+
+```{r}
+tree_flux_estimates <- all_est |> 
+  group_by(month, year) |> 
+  summarise(estimated_emission_tree = sum(total_tree_flux_umol_s), .groups = "drop")
+```
+
+## Estimating soil
+
+```{r}
+# Start with getting the total area of the soil in the 20m x 20m plot
+# We need to subtract the basal area of the 17 trees.
+
+tree_basal_area <- tree_specs |> 
+  # Conversion from cm2 to m2
+  mutate(ground_area_circum_m2=ground_area_circum_cm/10000) |> 
+  select(tree_num, ground_area_circum_m2)
+
+total_tree_area<- sum(tree_basal_area$ground_area_circum_m2, na.rm=T)
+# 5.396 m2
+
+total_area<-20*20
+# 400 m2
+
+total_soil_area<-total_area-total_tree_area
+total_soil_area
+# 394.6 m2
+```
+
+```{r}
+# Grabbing the methane soil fluxes by month
+soil_fluxes <- fluxes_filtered |> 
+  filter(surface=="soil") |> 
+  select(month, year, tree_num, surface, flux)
+
+# Getting median values
+# Adding in the area for equations, calculating area*flux
+soil_flux_medians <- soil_fluxes |> 
+  group_by(month, year) |> 
+  summarise(median_flux = median(flux), n = n()) |> 
+  ungroup() |> 
+  mutate(total_soil_area = total_soil_area)
+
+# Estimates for soil:
+soil_flux_estimates <- soil_flux_medians |> 
+  group_by(month, year) |> 
+  mutate(estimated_emission_soil=median_flux*total_soil_area)
+```
+
+```{r}
+# All together
+flux_estimates <- full_join(soil_flux_estimates, tree_flux_estimates,
+                            by = c("month", "year")) |> 
+  select(month, year, estimated_emission_tree, estimated_emission_soil)
+
+
+# Data transformation to get categories
+flux_long <- flux_estimates |> 
+  pivot_longer(cols = c(estimated_emission_tree, estimated_emission_soil),
+               names_to = "source",
+               values_to = "emission") |> 
+  mutate(source = recode(source,
+                         estimated_emission_tree = "Tree",
+                         estimated_emission_soil = "Soil"),
+         month = factor(month, levels = month.name))
+
+ggplot(flux_long, aes(x = month, y = emission, colour = source)) +
+  geom_point() +
+  labs(x = "Month",
+       y = "Estimated emission (mu mol/s)") +
+  theme_minimal()
+```

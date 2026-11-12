@@ -1,0 +1,802 @@
+---
+title: "Averages overall"
+format: html
+editor: visual
+---
+
+```{r}
+# Summary Stats.
+library(tidyverse)
+library(ggpmisc)
+```
+
+## Load in the Data (filtered)
+
+```{r}
+# Loading in filtered data
+filtered_data <- read.csv("data/fluxes_filtered.csv")
+
+# Including a date variable
+filtered_data$date <- as.Date(paste(filtered_data$month, "1", filtered_data$year), format = "%B %d %Y")
+
+# Creating height variable/tree_num for graphs
+filtered_data <- filtered_data |> 
+  mutate(
+    tree_num = str_extract(tree_id, "^[0-9]{4}"),
+    height   = str_extract(tree_id, "[a-zA-Z]$"),
+    height   = ifelse(is.na(height), "a", height)
+  )
+
+# Factors of month (for graphing clarity later)
+filtered_data <- filtered_data |>
+  mutate(month = factor(month, levels = month.name))
+```
+
+## Filling in Columns A-J
+
+```{r}
+# Col B/C: Tree CH4 flux at standard chamber height (45 cm) (avg of all trees) (mol/m2/d)
+col_b <- filtered_data |> 
+  filter(height == "a") |>
+  filter(surface == "stem") |> 
+  group_by(date) |> 
+  summarize(mean_flux = mean(flux, na.rm = TRUE), sd=sd(flux))
+```
+
+```{r}
+# Col D/E: Estimated average CH4 flux from entire emitting surface area of tree (based on decrease with height from 1602, 1614, 1616) (mol/m2/d)
+col_d <- filtered_data |> 
+  #filter(height == "a") |> 
+  filter(surface == "stem") |> 
+  group_by(date) |> 
+  summarize(mean_flux = mean(flux, na.rm = TRUE), sd=sd(flux))
+```
+
+```{r}
+# Isolating trees with multiple heights for Col D/E
+heights_cm <- tibble(
+  height = c("a", "b", "c", "d", "e"),
+  height_cm = c(45, 95, 145, 195, 345))
+heights_cm
+
+
+special_trees <- filtered_data |> 
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(surface=="stem") |> 
+  select(date, tree_num, flux, height) |> 
+  left_join(heights_cm, by = "height")
+
+special_trees |> 
+  filter(date=="2013-06-01") |> 
+  ggplot(aes(x=flux, y=height_cm, color=tree_num))+
+  geom_point()
+```
+
+```{r}
+# Col F: Emitting surface area of trees in plot (m2)*
+col_f <- filtered_data |> 
+  #filter(height == "a") |>
+  filter(surface=="stem") |> 
+  group_by(date) |> 
+  summarize(sum = sum(area_m2, na.rm = TRUE))
+```
+
+```{r}
+# Col H/I: Soil CH4 flux (avg of all soil fluxes) (mol/m2/d)
+col_h <- filtered_data |> 
+  filter(surface=="soil") |> 
+  group_by(date) |> 
+  summarize(mean = mean(flux, na.rm = TRUE),sd=sd(flux))
+```
+
+```{r}
+# Col J: Surface area of soil in plot (total area of plot less basal area of trees + knees) (m2)*
+col_j <- filtered_data |> 
+  filter(surface=="soil") |> 
+  group_by(date) |> 
+  summarize(sum = sum(area_m2, na.rm = TRUE))
+```
+
+## Plotting height and methane emissions
+
+```{r}
+# Tibble with REAL heights
+heights_cm <- tibble(
+  height = c("a", "b", "c", "d", "e"),
+  height_cm = c(45, 95, 145, 195, 345))
+heights_cm
+
+# Joining tibble and imposing new heights
+filtered_data_height <- filtered_data |> 
+  filter(surface != "soil") |> 
+  left_join(heights_cm, by = "height")
+```
+
+```{r}
+filtered_data_height |> 
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+ggplot(aes(x=flux, y=height_cm, color=tree_num)) +
+  geom_point()+
+  theme_bw()
+```
+
+```{r}
+# Just the median, no fractions
+
+median_data <- filtered_data_height |>
+  group_by(tree_num, height_cm) |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  summarize(med_flux = median(flux, na.rm = TRUE))
+
+ggplot(median_data, aes(x=med_flux, y=height_cm, color=tree_num)) +
+  geom_point()+
+  theme_bw()
+```
+
+```{r}
+# Fractions and median applied
+median_fractions <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_fractions, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  theme_bw()
+```
+
+```{r}
+# Test
+
+median_frac_june13 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2013-06-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_june13, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+    labs(title="June 2013 example graph",
+       subtitle= "1616 looks clean, 1602 and 1614 strange patterns")+
+  theme_bw()
+```
+
+```{r}
+median_frac_july13 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2013-07-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_july13, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+    labs(title="July 2013 example graph",
+       subtitle= "fairly standard curves")+
+  theme_bw()
+```
+
+```{r}
+median_frac_august13 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2013-08-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_august13, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="August 2013 example graph",
+       subtitle= "fairly standard curves")+
+  theme_bw()
+```
+
+```{r}
+median_frac_sep13 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2013-09-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_sep13, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+    labs(title="Sep 2013 example graph",
+       subtitle= "fairly standard curves")+
+  theme_bw()
+```
+
+```{r}
+median_frac_nov13 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2013-11-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_nov13, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+    labs(title="November 2013 example graph",
+       subtitle= "fairly standard curves, some weird measurements on 1602")+
+  theme_bw()
+```
+
+```{r}
+median_frac_jan14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-01-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_jan14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+    labs(title="Jan 2014 example graph",
+       subtitle= "fairly standard curves")+
+  theme_bw()
+```
+
+```{r}
+median_frac_feb14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-02-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_feb14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="Feb 2014 example graph",
+       subtitle= "1614 strange pattern")+
+  theme_bw()
+```
+
+```{r}
+median_frac_mar14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614)) |> 
+  filter(date=="2014-03-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_mar14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="March 2014 example graph",
+       subtitle= "NO 1616, 1614 is funky")+
+  theme_bw()
+```
+
+```{r}
+median_frac_apr14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-04-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_apr14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="April 2014 example graph",
+       subtitle= "1614 odd")+
+  theme_bw()
+```
+
+```{r}
+median_frac_may14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-05-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_may14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="May 2014 example graph",
+       subtitle= "fairly standard curves")+
+  theme_bw()
+```
+
+```{r}
+median_frac_june14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-06-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_june14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="June 2014 example graph",
+       subtitle= "only 1602")+
+  theme_bw()
+```
+
+```{r}
+median_frac_july14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-07-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_july14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="July 2014 example graph",
+       subtitle= "1616 and 1614 are strange")+
+  theme_bw()
+```
+
+```{r}
+median_frac_aug14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-07-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_aug14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="August 2014 example graph",
+       subtitle= "1616 and 1614 are different")+
+  theme_bw()
+```
+
+```{r}
+median_frac_sep14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-09-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_sep14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="Sep 2014 example graph",
+       subtitle= "1602 strange, 1614 borderline")+
+  theme_bw()
+```
+
+```{r}
+median_frac_oct14 <- filtered_data_height |>
+  filter(tree_num %in% c(1602, 1614, 1616)) |> 
+  filter(date=="2014-10-01") |> 
+  group_by(tree_num, height_cm) |>
+  summarize(med_flux = median(flux, na.rm = TRUE), .groups = "drop") |>
+  group_by(tree_num) |>
+  mutate(frac_flux = med_flux / med_flux[height_cm == 45])
+
+# Plot!
+ggplot(median_frac_oct14, aes(x = frac_flux, y = height_cm,
+                        color = factor(tree_num))) +
+  geom_point() +
+  geom_path(aes(group = tree_num)) +
+  labs(x = "Fraction of flux at 45 cm",
+       y = "Height above ground (cm)",
+       color = "Tree") +
+  labs(title="Oct 2014 example graph",
+       subtitle= "1614 strange")+
+  theme_bw()
+```
+
+## Week of 10/14
+
+```{r}
+# Overall
+month_sums <- filtered_data_height |> 
+  filter(tree_num %in% c("1602", "1614", "1616")) |> 
+  group_by(year, month) |> 
+  summarize(
+    mean_flux = mean(flux, na.rm = TRUE),
+    sd_flux   = sd(flux, na.rm = TRUE),
+    min_flux  = min(flux, na.rm = TRUE),
+    max_flux  = max(flux, na.rm = TRUE),
+    range_flux = max_flux - min_flux,
+    n=n(),
+    .groups = "drop"
+  )
+month_sums
+```
+
+```{r}
+# For height
+month_sums_height <- filtered_data_height |> 
+  filter(tree_num %in% c("1602", "1614", "1616")) |> 
+  group_by(year, month, height) |> 
+  summarize(
+    mean_flux  = mean(flux, na.rm = TRUE),
+    sd_flux    = sd(flux, na.rm = TRUE),
+    min_flux   = min(flux, na.rm = TRUE),
+    max_flux   = max(flux, na.rm = TRUE),
+    range_flux = max_flux - min_flux,
+    n          = n(),
+    .groups = "drop"
+  )
+
+high_mean <- month_sums_height |> 
+  filter(mean_flux > sd_flux)
+
+# Interesting, the months with higher means than standard deviations tend to be the warmer months of the year!
+month_sums_height
+high_mean
+```
+
+```{r}
+# Making fractions per tree
+fraction1602 <- filtered_data_height |> 
+  filter(tree_num == "1602") |> 
+  group_by(date) |> 
+  mutate(frac_flux = flux / flux[height_cm == 45][1]) |> 
+  ungroup()
+
+fraction1614 <- filtered_data_height |> 
+  filter(tree_num == "1614") |> 
+  group_by(date) |> 
+  mutate(frac_flux = flux / flux[height_cm == 45][1]) |> 
+  ungroup()
+
+fraction1616 <- filtered_data_height |> 
+  filter(tree_num == "1616") |> 
+  group_by(date) |> 
+  mutate(frac_flux = flux / flux[height_cm == 45][1]) |> 
+  ungroup()
+```
+
+```{r}
+# Sample Data Frame
+# df <- data.frame(x = 1:100, y = -log(x))
+# 
+# ggplot(df, aes(x = x, y = y)) +
+#   geom_line() +
+#   theme_bw() +
+#   labs(title = "ggplot2 Log-Y Plot")
+# 
+# 
+# easy_frac02<-fraction1602 |> 
+#   select(date, flux, height_cm) |> 
+#   filter(flux > 0)
+# easy_frac02
+# 
+# df.try <- data.frame(x=easy_frac02$flux, y=(easy_frac02$height_cm))
+# fit.try <- lm(log(y) ~ x, data = df.try)
+# summary(fit.try)
+# 
+# ggplot(df.try, aes(x=x,y=y))+
+#   geom_point()
+# 
+# ggplot(df.try, aes(x = x, y = y))+
+#   geom_point() +
+#   geom_smooth(se=F, method="lm", formula = y ~ log(x))+
+#   theme_bw()
+```
+
+```{r}
+# Fitting a model with 2 polynomials
+# fit1602 <- lm(log(frac_flux) ~ height_cm, data = fraction1602)
+# summary(fit1602)
+# 
+# curve_df1602 <- data.frame(height_cm = seq(min(fraction1602$height_cm),
+#                                        max(fraction1602$height_cm),
+#                                        length.out = 100)) #this will generate the curve, sequencing between 45-345 (min and max) and filling out equation
+# 
+# curve_df1602$frac_flux <- predict(fit1602, newdata = curve_df) # actually predicting values
+# 
+# 
+# # Plotting (with the polynomials on the table)
+# ggplot(fraction1602, aes(x = frac_flux, y = height_cm)) +
+#   geom_point(aes(color = month)) +
+#   geom_path(data = curve_df, color = "black", linewidth = 1) +
+#   scale_color_viridis_d() +
+#   theme_bw()+
+#   labs(title="Tree 1602")
+
+# Plotting all months independent of one another
+ggplot(fraction1602, aes(x = flux, y = height_cm)) +
+  geom_point() +
+  facet_wrap(~ date) +
+  theme_bw()+
+  labs(title="Tree 1602")
+```
+
+```{r}
+# Fitting a model with 2 polynomials
+# fit1614 <- lm(frac_flux ~ poly(height_cm, 2, raw = TRUE), data = fraction1614)
+# summary(fit1614)
+# 
+# curve_df1614 <- data.frame(height_cm = seq(min(fraction1614$height_cm),
+#                                        max(fraction1614$height_cm),
+#                                        length.out = 100)) #this will generate the curve, sequencing between 45-345 (min and max) and filling out equation
+# 
+# curve_df1614$frac_flux <- predict(fit1614, newdata = curve_df) # actually predicting values
+# 
+# 
+# # Plotting (with the polynomials on the table)
+# ggplot(fraction1614, aes(x = frac_flux, y = height_cm)) +
+#   geom_point(aes(color = month)) +
+#   geom_path(data = curve_df, color = "black", linewidth = 1) +
+#   scale_color_viridis_d() +
+#   theme_bw()+
+#   labs(title="Tree 1614")
+# 
+# 
+# 
+# ggplot(fraction1614, aes(x = flux, y = height_cm)) +
+#   geom_point() +
+#   facet_wrap(~ date) +
+#   theme_bw()+
+#   labs(title="Tree 1614")
+```
+
+```{r}
+# # Fitting a model with 2 polynomials
+# fit1616 <- lm(frac_flux ~ poly(height_cm, 2, raw = TRUE), data = fraction1616)
+# summary(fit1616)
+# 
+# curve_df1616 <- data.frame(height_cm = seq(min(fraction1616$height_cm),
+#                                            max(fraction1616$height_cm),
+#                                            length.out = 100)) #this will generate the curve, sequencing between 45-345 (min and max) and filling out equation
+# 
+# curve_df1616$frac_flux <- predict(fit1616, newdata = curve_df) # actually predicting values
+# 
+# 
+# # Plotting (with the polynomials on the table)
+# ggplot(fraction1616, aes(x = frac_flux, y = height_cm)) +
+#   geom_point(aes(color = month)) +
+#   geom_path(data = curve_df, color = "black", linewidth = 1) +
+#   scale_color_viridis_d() +
+#   theme_bw()+
+#   labs(title="Tree 1616")
+# 
+# 
+# ggplot(fraction1616, aes(x = flux, y = height_cm)) +
+#   geom_point() +
+#   facet_wrap(~ date) +
+#   theme_bw()+
+#   labs(title="Tree 1616")
+```
+
+```{r}
+# Source - https://stackoverflow.com/a/31854405
+# Posted by hugot, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-10-21, License - CC BY-SA 4.0
+
+t <- 1:100      # these are your time points
+a <- 10         # assume the size at t = 0 is 10
+r <- 0.1        # assume a growth constant
+y <- a*exp(r*t) # generate some y observations from our exponential model
+
+# visualise
+par(mfrow = c(1, 2))
+plot(t, y)      # on the original scale
+plot(t, log(y)) # taking the log(y)
+
+set.seed(12) # for reproducible results
+
+# errors constant across time - additive
+y_add <- a*exp(r*t) + rnorm(length(t), sd = 5000) # or: rnorm(length(t), mean = a*exp(r*t), sd = 5000)
+
+# errors grow as y grows - multiplicative (constant on the log-scale)
+y_mult <- a*exp(r*t + rnorm(length(t), sd = 1))  # or: rlnorm(length(t), mean = log(a) + r*t, sd = 1)
+
+# visualise
+par(mfrow = c(1, 2))
+plot(t, y_add, main = "additive error")
+lines(t, a*exp(t*r), col = "red") 
+plot(t, y_mult, main = "multiplicative error")
+lines(t, a*exp(t*r), col = "red")
+
+```
+
+```{r}
+add_nls <- nls(y_add ~ a*exp(r*t), 
+               start = list(a = 0.5, r = 0.2))
+coef(add_nls)
+
+#           a           r 
+# 11.30876845  0.09867135 
+
+
+mult_lm <- lm(log(y_mult) ~ t)
+coef(mult_lm)
+
+# (Intercept)           t 
+#  2.39448488  0.09837215 
+
+```
+
+## Week of 10/21
+
+```{r}
+df<-fraction1602 |>
+  group_by(year, month) |>
+  mutate(
+    surface_area_m2     = area_m2,
+    segment_flux_umol_s = surface_area_m2 * flux,
+    total_tree_flux   = sum(segment_flux_umol_s),   # whole tree, all heights
+    pct_of_total        = segment_flux_umol_s / sum(segment_flux_umol_s),
+    multiplier_a          = if_else(
+      height_cm == 45,
+      1 / pct_of_total,
+      NA_real_)) |>
+  select(tree_num,month, year, height_cm, total_tree_flux, surface_area_m2, flux, segment_flux_umol_s, pct_of_total, multiplier_a
+  )
+
+df
+```
+
+```{r}
+# ggplot(data=df, aes(x=multiplier_b))+
+#   geom_histogram()+
+#   theme_minimal()
+```
+
+```{r}
+df2<-fraction1616 |>
+  group_by(year, month) |>
+  mutate(
+    surface_area_m2     = area_m2,
+    segment_flux_umol_s = surface_area_m2 * flux,
+    total_tree_flux   = sum(segment_flux_umol_s),   # whole tree, all heights
+    pct_of_total        = segment_flux_umol_s / sum(segment_flux_umol_s),
+    multiplier_a          = if_else(
+      height_cm == 45,
+      1 / pct_of_total,
+      NA_real_)) |>
+  select(tree_num,month, year, height_cm, total_tree_flux, surface_area_m2, flux, segment_flux_umol_s, pct_of_total, multiplier_a
+  )
+
+df2
+```
+
+```{r}
+df3<-fraction1614 |>
+  group_by(year, month) |>
+  mutate(
+    surface_area_m2     = area_m2,
+    segment_flux_umol_s = surface_area_m2 * flux,
+    total_tree_flux   = sum(segment_flux_umol_s),   # whole tree, all heights
+    pct_of_total        = segment_flux_umol_s / sum(segment_flux_umol_s),
+    multiplier_a          = if_else(
+      height_cm == 45,
+      1 / pct_of_total,
+      NA_real_)) |>
+  select(tree_num,month, year, height_cm, total_tree_flux, surface_area_m2, flux, segment_flux_umol_s, pct_of_total, multiplier_a
+  )
+
+df3
+```
+
+```{r}
+combined <- bind_rows(df, df2, df3)
+
+#ggplot(combined, aes(x=multiplier_b, fill=tree_num))+
+ # geom_histogram()+
+ # theme_minimal()
+
+ggplot(combined, aes(x=multiplier_a, fill=tree_num))+
+  geom_histogram(binwidth=0.25)+
+  #facet_wrap(~ tree_num)
+  theme_minimal()
+```
+
+```{r}
+ggplot(data=combined, aes(x=month, y=multiplier_a, color=tree_num))+
+  geom_point()+
+  theme_bw()
+```
+
+```{r}
+write.csv(combined, "tree_height_analysis.csv", na="NA")
+```
+
+Write in a simple and direct way - each paragraph with a topic sentence.
+
+Make it clear what the point was of everything included.
+
+Less than 2 pages is ideal!
